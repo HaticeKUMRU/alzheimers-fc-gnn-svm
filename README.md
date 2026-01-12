@@ -17,6 +17,8 @@ The project explores two major modeling approaches:
 * **Data Preprocessing:** ROI signal extraction and reduction (410 $\to$ 400 regions).
 * **Connectivity Construction:**
     * Pearson Correlation.
+    * Spearman Correlation.
+    * High Order Neural Network Correlation.
     * Fisher Z-Transformation.
     * Percentile-based Thresholding (Top 26%).
 * **Feature Engineering:**
