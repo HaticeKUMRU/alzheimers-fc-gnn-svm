@@ -205,22 +205,28 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.env
-.venv/
-venv/
-.ipynb_checkpoints/
-
-# Large data files
+# =========================
+# MATLAB
+# =========================
 *.mat
+*.asv
+*.m~
+slprj/
+codegen/
+*.mex*
+
+# =========================
+# Neuroimaging / Data
+# =========================
 *.nii
 *.nii.gz
 *.h5
 *.csv
+*.tsv
 
-# OS junk
+# =========================
+# OS
+# =========================
 .DS_Store
+Thumbs.db
+
