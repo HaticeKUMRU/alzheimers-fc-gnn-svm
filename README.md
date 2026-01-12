@@ -9,8 +9,8 @@
 This repository contains a complete pipeline for classifying **Alzheimer’s Disease (AD)** vs. **Cognitively Normal (CN)** subjects using functional connectivity (FC) derived from fMRI data.
 
 The project explores two major modeling approaches:
-1.  **Classical Machine Learning:** SVM and MLP using graph-theoretic features (Node Strength).
-2.  **Deep Learning:** Graph Neural Networks (GNN) and DeepSets using full connectivity matrices.
+1.  **Classical Machine Learning:** SVM is using graph-theoretic features (Node Strength).
+2.  **Deep Learning:** Graph Neural Networks (GNN) and MLP using full connectivity matrices.
 
 ##Key Features
 
