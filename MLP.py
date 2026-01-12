@@ -33,7 +33,7 @@ try:
     NILEARN_AVAILABLE = True
 except ImportError:
     NILEARN_AVAILABLE = False
-    print("⚠️ Nilearn not installed → anatomical labels disabled")
+    print(" Nilearn not installed → anatomical labels disabled")
 
 
 # ======================================================
@@ -52,9 +52,9 @@ REPORT_TOP_N = 8
 
 MAT_PATH = "Alzheimer_400x400_Full_yenipearson.mat"
 
-print("⚙️ Model: Node Strength → MLP")
-print("⚙️ Metrics: Accuracy | F1 | Sensitivity | Specificity")
-print(f"⚙️ Device: {DEVICE}")
+print(" Model: Node Strength → MLP")
+print(" Metrics: Accuracy | F1 | Sensitivity | Specificity")
+print(f" Device: {DEVICE}")
 
 
 # ======================================================
@@ -79,11 +79,11 @@ def load_and_vectorize(mat_path):
     X = mat["X_Tum"]       # (N, 400, 400)
     y = mat["y_Tum"].flatten()
 
-    print(f"📂 Raw data loaded: {X.shape}")
+    print(f" Raw data loaded: {X.shape}")
 
     # Node strength feature extraction
     X_vec = np.mean(np.abs(X), axis=2)  # (N, 400)
-    print(f"🔄 Node strength features extracted: {X_vec.shape}")
+    print(f" Node strength features extracted: {X_vec.shape}")
 
     # Class balancing (same strategy as GNN experiment)
     idx_0 = np.where(y == 0)[0]
@@ -96,7 +96,7 @@ def load_and_vectorize(mat_path):
     selected = np.concatenate([idx_0[:limit], idx_1[:limit]])
     np.random.shuffle(selected)
 
-    print(f"⚖️ Balanced dataset: {len(selected)} samples")
+    print(f" Balanced dataset: {len(selected)} samples")
 
     return X_vec[selected], y[selected]
 
