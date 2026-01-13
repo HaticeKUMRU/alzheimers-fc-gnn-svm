@@ -1,80 +1,80 @@
 %% =========================================================
-%  ALZHEIMER HON-SPEARMAN VERİ HAZIRLAMA (SVM İÇİN)
-
+%  ALZHEIMER HON-SPEARMAN DATA PREPARATION (FOR SVM)
+%% =========================================================
 
 clear; clc; close all;
 
 %% =========================================================
-% 1. AYARLAR
+% 1. SETTINGS
 %% =========================================================
 
-fprintf(' SVM için HON-Spearman veri hazırlanıyor...\n');
+fprintf(' Preparing HON-Spearman data for SVM...\n');
 
-AnaKlasor = '/Users/haticekumru/Desktop/Alzheimer_fnets';
-CiktiKlasoru = fullfile(pwd, 'ALZHEIMER_SVM_HON_SPEARMAN');
-if ~exist(CiktiKlasoru,'dir'), mkdir(CiktiKlasoru); end
+MainFolder = '/Users/haticekumru/Desktop/Alzheimer_fnets';
+OutputFolder = fullfile(pwd, 'ALZHEIMER_SVM_HON_SPEARMAN');
+if ~exist(OutputFolder,'dir'), mkdir(OutputFolder); end
 
-% ROI seçimi (410 → 400)
-ROI_Indeksleri = [1:200, 211:410];
-ROI_Sayisi = numel(ROI_Indeksleri);
+% ROI selection (410 → 400)
+ROI_Indices = [1:200, 211:410];
+ROI_Count = numel(ROI_Indices);
 
-% Parametreler
-Esik_Orani = 0.26;
-GuvenliAtanh = @(x) atanh(max(min(x,0.999999), -0.999999));
+% Parameters
+Threshold_Ratio = 0.26;
+SafeAtanh = @(x) atanh(max(min(x,0.999999), -0.999999));
 
 %% =========================================================
-% 2. VERİ SETİ
+% 2. DATASET
 %% =========================================================
 
-Gruplar = { ...
-    struct('isim','CN','yol','45_CN_yeni','etiket',0), ...
-    struct('isim','AD','yol','45_AD_yeni','etiket',1) ...
+Groups = { ...
+    struct('name','CN','path','45_CN_yeni','label',0), ...
+    struct('name','AD','path','45_AD_yeni','label',1) ...
 };
 
 X_SVM = [];
 y_SVM = [];
 
 %% =========================================================
-% 3. ANA İŞLEME DÖNGÜSÜ
+% 3. MAIN PROCESSING LOOP
 %% =========================================================
 
-for g = 1:numel(Gruplar)
+for g = 1:numel(Groups)
 
-    GrupYolu = fullfile(AnaKlasor, Gruplar{g}.yol);
-    Dosyalar = dir(fullfile(GrupYolu, '*.txt'));
+    GroupPath = fullfile(MainFolder, Groups{g}.path);
+    Files = dir(fullfile(GroupPath, '*.txt'));
 
-    fprintf('  %s grubu (%d dosya)\n', Gruplar{g}.isim, numel(Dosyalar));
+    fprintf('  %s group (%d files)\n', Groups{g}.name, numel(Files));
 
-    for i = 1:numel(Dosyalar)
+    for i = 1:numel(Files)
         try
-            %% --- A) VERİ OKUMA ---
-            HamMatris = readmatrix(fullfile(GrupYolu, Dosyalar(i).name));
-            Matris = HamMatris(ROI_Indeksleri, ROI_Indeksleri);
+            %% --- A) DATA READING ---
+            RawMatrix = readmatrix(fullfile(GroupPath, Files(i).name));
+            Matrix = RawMatrix(ROI_Indices, ROI_Indices);
 
-            if size(Matris,1) ~= ROI_Sayisi, continue; end
-            Matris(~isfinite(Matris)) = 0;
-            Matris(1:ROI_Sayisi+1:end) = 0;
+            if size(Matrix,1) ~= ROI_Count, continue; end
+            Matrix(~isfinite(Matrix)) = 0;
+            Matrix(1:ROI_Count+1:end) = 0;
 
-            %% --- B) FISHER-Z (TEK KEZ) ---
-            Matris_Z = GuvenliAtanh(Matris);
+            %% --- B) FISHER-Z TRANSFORMATION (ONCE) ---
+            Matrix_Z = SafeAtanh(Matrix);
 
-            %% --- C) HON (Spearman) ---
-            HON = corr(Matris_Z, 'Type','Spearman','Rows','pairwise');
+            %% --- C) HON (SPEARMAN) ---
+            HON = corr(Matrix_Z, 'Type','Spearman','Rows','pairwise');
             HON(~isfinite(HON)) = 0;
-            HON(1:ROI_Sayisi+1:end) = 0;
+            HON(1:ROI_Count+1:end) = 0;
 
-            %% --- D) EŞİKLEME ---
-            ust = abs(HON(triu(true(ROI_Sayisi),1)));
-            if ~isempty(ust)
-                esik = prctile(ust,(1-Esik_Orani)*100);
-                HON(abs(HON) < esik) = 0;
+            %% --- D) THRESHOLDING ---
+            upper = abs(HON(triu(true(ROI_Count),1)));
+            if ~isempty(upper)
+                threshold = prctile(upper,(1-Threshold_Ratio)*100);
+                HON(abs(HON) < threshold) = 0;
             end
 
-            %% --- E) SVM ÖZNİTELİKLERİ ---
-            % HON ÜZERİNDEN NODE STRENGTH
+            %% --- E) SVM FEATURES ---
+            % NODE STRENGTH COMPUTED FROM HON
             NodeStrength = mean(abs(HON),2)';
             X_SVM = [X_SVM; NodeStrength];
-            y_SVM = [y_SVM; Gruplar{g}.etiket];
+            y_SVM = [y_SVM; Groups{g}.label];
 
         catch
             continue;
@@ -83,22 +83,22 @@ for g = 1:numel(Gruplar)
 end
 
 %% =========================================================
-% 4. VERİ TEMİZLİĞİ
+% 4. DATA CLEANING
 %% =========================================================
 
 X_SVM(isnan(X_SVM)) = 0;
-ROI_Etiketleri = compose("ROI_%03d",(1:ROI_Sayisi)');
-X_MLP = X_SVM;   % HON-Spearman node strength → MLP / SVM feature
-y_Tum = y_SVM;   % Etiketler
+ROI_Labels = compose("ROI_%03d",(1:ROI_Count)');
+X_MLP = X_SVM;   % HON-Spearman node strength → MLP / SVM features
+y_All = y_SVM;   % Labels
 
 %% =========================================================
-% 5. SVM VERİ KAYDI
+% 5. SVM DATA SAVING
 %% =========================================================
 
-SVM_Veri.X   = X_MLP;        % (N x 400)
-SVM_Veri.y   = y_Tum;        % (N x 1)
-SVM_Veri.ROI = ROI_Etiketleri;
+SVM_Data.X   = X_MLP;        % (N x 400)
+SVM_Data.y   = y_All;        % (N x 1)
+SVM_Data.ROI = ROI_Labels;
 
-save(fullfile(CiktiKlasoru,'Alzheimer_HonSpearman_ML.mat'),'SVM_Veri');
+save(fullfile(OutputFolder,'Alzheimer_HonSpearman_ML.mat'),'SVM_Data');
 
-fprintf(' Classical ML (HON-Spearman) verisi kaydedildi\n');
+fprintf(' Classical ML (HON-Spearman) data saved\n');
