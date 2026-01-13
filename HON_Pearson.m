@@ -10,8 +10,9 @@ clear; clc; close all;
 
 fprintf(' Preparing HON-Pearson data for SVM...\n');
 
-MainFolder = '/Users/haticekumru/Desktop/Alzheimer_fnets';
-OutputFolder = fullfile(pwd, 'ALZHEIMER_SVM_HON_Pearson');
+ProjectRoot = fileparts(mfilename('fullpath'));
+MainFolder  = ProjectRoot;
+OutputFolder = fullfile(ProjectRoot, 'ALZHEIMER_SVM_HON_Pearson');
 if ~exist(OutputFolder,'dir'), mkdir(OutputFolder); end
 
 % ROI selection (410 → 400)
