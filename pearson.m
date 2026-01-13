@@ -4,8 +4,9 @@ clear; clc; close all;
 % 1. GENERAL SETTINGS
 %% =========================================================
 
-MainFolder = '/Users/haticekumru/Desktop/Alzheimer_fnets';
-OutputFolder = fullfile(pwd, 'ALZHEIMER_ML_VERISI_PEARSON');
+ProjectRoot = fileparts(mfilename('fullpath'));
+MainFolder  = ProjectRoot;
+OutputFolder = fullfile(ProjectRoot, 'ALZHEIMER_ML_VERISI_PEARSON');
 if ~exist(OutputFolder, 'dir'), mkdir(OutputFolder); end
 
 % ROI selection (410 → 400)
