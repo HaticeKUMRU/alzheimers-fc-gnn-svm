@@ -94,7 +94,6 @@ Two different data representations are constructed:
 * No manual intervention is required.
 * Random seeds can be fixed to ensure deterministic experiments.
 
----
 
 ## Applications
 
@@ -103,5 +102,4 @@ Two different data representations are constructed:
 * Comparison of classical machine learning and graph deep learning
 * Neuroimaging-based biomarker research
 
----
 
