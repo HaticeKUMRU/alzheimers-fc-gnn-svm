@@ -1,78 +1,78 @@
 clear; clc; close all;
 
 %% =========================================================
-% 1. GENEL AYARLAR
+% 1. GENERAL SETTINGS
 %% =========================================================
 
-AnaKlasor = '/Users/haticekumru/Desktop/Alzheimer_fnets';
-CiktiKlasoru = fullfile(pwd, 'ALZHEIMER_ML_VERISI_PEARSON');
-if ~exist(CiktiKlasoru, 'dir'), mkdir(CiktiKlasoru); end
+MainFolder = '/Users/haticekumru/Desktop/Alzheimer_fnets';
+OutputFolder = fullfile(pwd, 'ALZHEIMER_ML_VERISI_PEARSON');
+if ~exist(OutputFolder, 'dir'), mkdir(OutputFolder); end
 
-% ROI seçimi (410 → 400)
-ROI_Indeksleri = [1:200, 211:410];
-ROI_Sayisi = numel(ROI_Indeksleri);
+% ROI selection (410 → 400)
+ROI_Indices = [1:200, 211:410];
+ROI_Count = numel(ROI_Indices);
 
-% Bağlantı parametreleri
-Esik_Orani = 0.26;   % En güçlü %26 bağlantıyı tut
-GuvenliAtanh = @(x) atanh(max(min(x,0.999999),-0.999999));
+% Connectivity parameters
+Threshold_Ratio = 0.26;   % Keep strongest 26% of connections
+SafeAtanh = @(x) atanh(max(min(x,0.999999),-0.999999));
 
 %% =========================================================
-% 2. VERİ SETİ TANIMI
+% 2. DATASET DEFINITION
 %% =========================================================
 
-Gruplar = {'45_CN_yeni', '45_AD_yeni'};
-Etiketler = [0, 1];   % 0: Sağlıklı (CN), 1: Alzheimer (AD)
+Groups = {'45_CN_yeni', '45_AD_yeni'};
+Labels = [0, 1];   % 0: Cognitively Normal (CN), 1: Alzheimer’s Disease (AD)
 
-X_Tum = [];          % (N x 400 x 400) → GNN
+X_All = [];          % (N x 400 x 400) → GNN
 X_MLP = [];          % (N x 400) → MLP
-y_Tum = [];
+y_All = [];
 
-fprintf(' Veri işleme başlıyor...\n');
+fprintf(' Data processing started...\n');
 
 %% =========================================================
-% 3. ANA VERİ İŞLEME DÖNGÜSÜ
+% 3. MAIN DATA PROCESSING LOOP
 %% =========================================================
 
-for g = 1:numel(Gruplar)
+for g = 1:numel(Groups)
     
-    GrupYolu = fullfile(AnaKlasor, Gruplar{g});
-    Dosyalar = dir(fullfile(GrupYolu, '*.txt'));
+    GroupPath = fullfile(MainFolder, Groups{g});
+    Files = dir(fullfile(GroupPath, '*.txt'));
     
-    fprintf('  %s grubu (%d dosya)\n', Gruplar{g}, numel(Dosyalar));
+    fprintf('  %s group (%d files)\n', Groups{g}, numel(Files));
     
-    for i = 1:numel(Dosyalar)
+    for i = 1:numel(Files)
         try
-            %% --- A) VERİ OKUMA ---
-            Dosya = fullfile(GrupYolu, Dosyalar(i).name);
-            Sinyal = readmatrix(Dosya);
+            %% --- A) DATA READING ---
+            FilePath = fullfile(GroupPath, Files(i).name);
+            Signal = readmatrix(FilePath);
 
-            % Zaman x ROI formatını garanti et
-            if size(Sinyal,1) < size(Sinyal,2)
-                Sinyal = Sinyal';
+            % Ensure Time x ROI format
+            if size(Signal,1) < size(Signal,2)
+                Signal = Signal';
             end
 
-            %% --- B) ROI KESME ---
-            if size(Sinyal,2) < 410, continue; end
-            Sinyal = Sinyal(:, ROI_Indeksleri);
+            %% --- B) ROI CROPPING ---
+            if size(Signal,2) < 410, continue; end
+            Signal = Signal(:, ROI_Indices);
 
-            %% --- C) PEARSON FC HESABI ---
-            FC = corr(Sinyal,'Type','pearson');
+            %% --- C) PEARSON FC COMPUTATION ---
+            FC = corr(Signal,'Type','pearson');
             FC(isnan(FC)) = 0;
-            FC(1:ROI_Sayisi+1:end) = 0;  % Köşegen sıfır
+            FC(1:ROI_Count+1:end) = 0;  % Zero diagonal
 
-            %% --- D) EŞİKLEME ---
-            ust_ucgen = abs(FC(triu(true(ROI_Sayisi),1)));
-            esik = prctile(ust_ucgen, (1-Esik_Orani)*100);
-            FC(abs(FC) < esik) = 0;
+            %% --- D) THRESHOLDING ---
+            upper_triangle = abs(FC(triu(true(ROI_Count),1)));
+            threshold = prctile(upper_triangle, (1-Threshold_Ratio)*100);
+            FC(abs(FC) < threshold) = 0;
 
-            %% --- E) FISHER-Z ---
-            FC_Z = GuvenliAtanh(FC);
+            %% --- E) FISHER-Z TRANSFORMATION ---
+            FC_Z = SafeAtanh(FC);
 
-            %% --- F) KAYIT (GNN) ---
-            X_Tum = cat(3, X_Tum, FC_Z);
-            y_Tum = [y_Tum; Etiketler(g)];
+            %% --- F) SAVE (GNN) ---
+            X_All = cat(3, X_All, FC_Z);
+            y_All = [y_All; Labels(g)];
 
-            %% --- G) ÖZNİTELİK (MLP) ---
+            %% --- G) FEATURE EXTRACTION (MLP) ---
             NodeStrength = mean(abs(FC_Z),2)';
             X_MLP = [X_MLP; NodeStrength];
 
@@ -83,30 +83,28 @@ for g = 1:numel(Gruplar)
 end
 
 %% =========================================================
-% 4. VERİ TEMİZLİĞİ
+% 4. DATA CLEANING
 %% =========================================================
 
 X_MLP(isnan(X_MLP)) = 0;
-ROI_Etiketleri = compose("ROI_%03d",1:ROI_Sayisi)';
-
+ROI_Labels = compose("ROI_%03d",1:ROI_Count)';
 
 %% =========================================================
-% 5. VERİ KAYDI (CLASSICAL ML)
+% 5. DATA SAVING (CLASSICAL ML)
 %% =========================================================
 
-SVM_Veri.X   = X_MLP;        % (N x 400)
-SVM_Veri.y   = y_Tum;        % (N x 1)
-SVM_Veri.ROI = ROI_Etiketleri;
+SVM_Data.X   = X_MLP;        % (N x 400)
+SVM_Data.y   = y_All;        % (N x 1)
+SVM_Data.ROI = ROI_Labels;
 
-save(fullfile(CiktiKlasoru,'Alzheimer_Pearson_ML.mat'),'SVM_Veri');
+save(fullfile(OutputFolder,'Alzheimer_Pearson_ML.mat'),'SVM_Data');
 
-fprintf(' Classical ML (SVM) verisi kaydedildi\n');
+fprintf(' Classical ML (SVM) data saved\n');
 
 % --- GNN / DeepSet ---
-X_Tum = permute(X_Tum,[3 1 2]); % (N x 400 x 400)
-save(fullfile(CiktiKlasoru,'Alzheimer_400x400_Full_yenipearson.mat'), ...
-     'X_Tum','y_Tum');
+X_All = permute(X_All,[3 1 2]); % (N x 400 x 400)
+save(fullfile(OutputFolder,'Alzheimer_400x400_Full_yenipearson.mat'), ...
+     'X_All','y_All');
 
-fprintf(' GNN / DeepSet verisi kaydedildi\n');
-fprintf(' Toplam örnek: %d\n', size(X_Tum,1));
-
+fprintf(' GNN / DeepSet data saved\n');
+fprintf(' Total samples: %d\n', size(X_All,1));
