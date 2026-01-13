@@ -75,24 +75,17 @@ Two different data representations are constructed:
 ## Repository Structure
 
 ```text
-├── data_preparation/
-│   ├── prepare_pearson_ml.m
-│   ├── prepare_hon_spearman_ml.m
-│
-├── classical_ml/
-│   ├── svm_training.m
-│   └── mlp_training.m
-│
-├── deep_learning/
-│   └── gnn_gat_model.py
-│
-├── results/
-│   ├── figures/
-│   └── logs/
-│
-├── README.md
-└── .gitignore
-```
+├── pearson.m              # Pearson FC computation and feature extraction
+├── Spearman.m             # Spearman FC computation
+├── HON_Pearson.m          # Higher-Order Network based Pearson correlation
+├── HON_Spearman.m         # Higher-Order Network based Spearman correlation
+├── SVM.m                  # SVM training and evaluation (LOOCV)
+├── MLP.py                 # MLP model (adapted from fNET-Analysis)
+├── GNN+GAT.py             # Graph Attention Network (GAT) model
+├── README.md              # Project documentation
+├── .gitignore             # Git ignore rules
+└── LICENSE                # License file
+
 
 ---
 
