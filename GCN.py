@@ -82,10 +82,7 @@ def matrix_to_graph(matrix: np.ndarray, label: int) -> Data:
     matrix = filter_rois(matrix)
     matrix = sparsify_matrix(matrix, keep_ratio=0.25)
 
-    # Node features = adjacency matrix itself
     x = torch.tensor(matrix, dtype=torch.float)
-    
-    # Edge index & edge attributes
     edge_index = torch.tensor(np.array(np.nonzero(matrix)), dtype=torch.long)
     edge_attr = torch.tensor(matrix[edge_index[0], edge_index[1]], dtype=torch.float)
 
@@ -111,7 +108,7 @@ def load_graphs(data_dir: str) -> list:
     """
     graphs = []
     class_folders = sorted([f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f))])
-    print("📂 Class folders detected:", class_folders)
+    print("Class folders detected:", class_folders)
 
     for cls in class_folders:
         label = 1 if "AD" in cls.upper() else 0
@@ -123,7 +120,7 @@ def load_graphs(data_dir: str) -> list:
             matrix = np.loadtxt(os.path.join(cls_path, file))
             graphs.append(matrix_to_graph(matrix, label))
 
-    print(f"\n✅ Total number of graphs: {len(graphs)}")
+    print(f"Total number of graphs: {len(graphs)}")
     return graphs
 
 # =========================================================
@@ -184,7 +181,6 @@ def run_loocv(graphs: list):
         train_loader = DataLoader(train_set, batch_size=16, shuffle=True)
         test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
 
-        # Initialize model from scratch for each fold
         model = GCNNet(graphs[0].x.shape[1]).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=5e-4)
         criterion = FocalLoss()
@@ -204,12 +200,10 @@ def run_loocv(graphs: list):
                 total_loss += loss.item()
 
             avg_loss = total_loss / len(train_loader)
-            # Early stopping
             if epoch > 30 and abs(prev_loss - avg_loss) < 1e-4:
                 break
             prev_loss = avg_loss
 
-        # Evaluation on unseen test data
         model.eval()
         with torch.no_grad():
             for batch in test_loader:
@@ -233,9 +227,8 @@ def run_loocv(graphs: list):
 if __name__ == "__main__":
     set_seed(42)
 
-    # Set a general path for the dataset (adjust according to your system)
-    DATA_DIR = os.path.join("data", "Alzheimer_fnets")  # Example: ./data/Alzheimer_fnets
+    DATA_DIR = os.path.join("data", "Alzheimer_fnets")  # Adjust according to your system
     graphs = load_graphs(DATA_DIR)
 
-    print("\n🚀 Starting LOOCV evaluation...\n")
+    print("Starting LOOCV evaluation...")
     run_loocv(graphs)
