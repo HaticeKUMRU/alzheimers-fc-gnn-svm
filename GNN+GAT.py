@@ -1,176 +1,238 @@
-"""
-Graph Neural Network (GNN) with Graph Attention Network (GAT) for
-Alzheimer's Disease classification using functional connectivity matrices.
-
-This implementation is adapted from the following open-source repository:
-https://github.com/gururgg/fNET-Analysis/blob/main/ABIDE/ABIDE-GNN.py
-
-The code has been modified for dataset-specific preprocessing,
-ROI selection, and extended clinical performance evaluation.
-"""
-
+# =========================================================
+# Graph Neural Network for fMRI Functional Connectivity
+# =========================================================
 import os
 import random
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import Adam
-from torch.optim.lr_scheduler import StepLR
-from sklearn.model_selection import StratifiedKFold
-from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
-from sklearn.ensemble import RandomForestClassifier
-import scipy.io
-import matplotlib.pyplot as plt
-import seaborn as sns
 
-# PyG Imports
-from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GATConv, global_mean_pool, global_max_pool
 from torch_geometric.data import Data
-from torch_geometric.utils import dropout_edge
+from torch_geometric.loader import DataLoader
+from torch_geometric.nn import GATConv, global_mean_pool
 
-# -------------------------------
-# NILEARN INTEGRATION
-# -------------------------------
-try:
-    from nilearn import datasets
-    NILEARN_AVAILABLE = True
-except ImportError:
-    NILEARN_AVAILABLE = False
-    print("WARNING: 'nilearn' is not installed. ROI names will not be displayed. (pip install nilearn)")
+from sklearn.model_selection import LeaveOneOut
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
-# -------------------------------
-# SETTINGS
-# -------------------------------
-device = "cuda" if torch.cuda.is_available() else "cpu"
-K_TOP_EDGES = 8
-HIDDEN_DIM = 16
-DROPOUT = 0.3
-DROP_EDGE_RATES = 0.05
-EPOCHS = 150
-ROI_HEDEF = 60
-REPORT_TOP_N = 8
+# =========================================================
+# DEVICE CONFIGURATION & REPRODUCIBILITY
+# =========================================================
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-print(f"Strategy: Top {ROI_HEDEF} ROI | Sensitivity & Specificity Analysis Enabled")
-
-
-def fix_seed(seed):
+def set_seed(seed: int = 42):
+    """Fix random seeds for reproducibility."""
     torch.manual_seed(seed)
-    random.seed(seed)
     np.random.seed(seed)
+    random.seed(seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
+# =========================================================
+# ROI FILTERING (420 → 400)
+# =========================================================
+def filter_rois(matrix: np.ndarray) -> np.ndarray:
+    """
+    Select 400 ROIs from the original 420 by removing unwanted indices.
+    
+    Args:
+        matrix (np.ndarray): Square functional connectivity matrix.
+    
+    Returns:
+        np.ndarray: Filtered matrix with 400 ROIs.
+    """
+    indices = np.concatenate([np.arange(0, 200), np.arange(210, 410)])
+    return matrix[np.ix_(indices, indices)]
 
-# -------------------------------
-# REPORTING FUNCTION FOR THESIS / PAPER
-# -------------------------------
-def print_thesis_report(selected_indices, importances):
-    if not NILEARN_AVAILABLE:
-        print(f"Selected Indices: {selected_indices[:REPORT_TOP_N]}")
-        return
+# =========================================================
+# EDGE SPARSIFICATION (%25)
+# =========================================================
+def sparsify_matrix(matrix: np.ndarray, keep_ratio: float = 0.25) -> np.ndarray:
+    """
+    Retain only the top edges by absolute value to enforce sparsity.
+    
+    Args:
+        matrix (np.ndarray): Square functional connectivity matrix.
+        keep_ratio (float): Fraction of edges to keep.
+    
+    Returns:
+        np.ndarray: Sparse connectivity matrix.
+    """
+    n = matrix.shape[0]
+    triu = np.triu_indices(n, k=1)
+    vals = np.abs(matrix[triu])
+    threshold = np.percentile(vals, 100 * (1 - keep_ratio))
+    sparse_matrix = np.where(np.abs(matrix) >= threshold, matrix, 0)
+    return sparse_matrix
 
-    print("\n" + "=" * 95)
-    print(f"PAPER RESULTS: TOP {REPORT_TOP_N} MOST DISCRIMINATIVE BRAIN REGIONS")
-    print("=" * 95)
+# =========================================================
+# MATRIX TO GRAPH CONVERSION
+# =========================================================
+def matrix_to_graph(matrix: np.ndarray, label: int) -> Data:
+    """
+    Convert functional connectivity matrix into a PyG graph.
+    
+    Args:
+        matrix (np.ndarray): Functional connectivity matrix.
+        label (int): Class label (e.g., 0=Control, 1=AD).
+    
+    Returns:
+        torch_geometric.data.Data: Graph object.
+    """
+    matrix = filter_rois(matrix)
+    matrix = sparsify_matrix(matrix, keep_ratio=0.25)
 
-    try:
-        atlas = datasets.fetch_atlas_schaefer_2018(n_rois=400, yeo_networks=7)
-        labels = [l.decode() if isinstance(l, bytes) else l for l in atlas.labels]
-    except Exception as e:
-        print(f"Atlas could not be loaded: {e}")
-        return
+    # Node features = adjacency matrix itself (can be modified)
+    x = torch.tensor(matrix, dtype=torch.float)
+    
+    # Edge index & edge attributes
+    edge_index = torch.tensor(np.array(np.nonzero(matrix)), dtype=torch.long)
+    edge_attr = torch.tensor(matrix[edge_index[0], edge_index[1]], dtype=torch.float)
 
-    print(f"{'Rank':<5} | {'Score':<8} | {'ROI ID':<8} | {'Hemisphere':<10} | {'Network':<15} | {'Region Detail'}")
-    print("-" * 95)
+    return Data(
+        x=x,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        y=torch.tensor([label], dtype=torch.long)
+    )
 
-    for rank in range(REPORT_TOP_N):
-        idx = selected_indices[rank]
-        score = importances[rank]
-        roi_id = idx + 1
+# =========================================================
+# LOAD DATASET
+# =========================================================
+def load_graphs(data_dir: str) -> list:
+    """
+    Load all graphs from a directory structure organized by class.
+    
+    Args:
+        data_dir (str): Root directory containing class subfolders with .txt matrices.
+    
+    Returns:
+        list: List of PyG Data objects.
+    """
+    graphs = []
+    class_folders = sorted([f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f))])
+    print("📂 Class folders detected:", class_folders)
 
-        if 0 <= idx < len(labels):
-            full_label = labels[idx]
-            parts = full_label.split('_')
-            if len(parts) >= 4:
-                hemi = "Left (LH)" if "LH" in parts[1] else "Right (RH)"
-                network = parts[2]
-                region_detail = " ".join(parts[3:])
-            else:
-                hemi = "-"
-                network = "Unknown"
-                region_detail = full_label
-            print(f"{rank + 1:<5} | {score:.4f}   | {roi_id:<8} | {hemi:<10} | {network:<15} | {region_detail}")
-        else:
-            print(f"{rank + 1:<5} | {score:.4f}   | {roi_id:<8} | -          | -               | Invalid ID")
-    print("=" * 95 + "\n")
+    for cls in class_folders:
+        label = 1 if "AD" in cls.upper() else 0
+        cls_path = os.path.join(data_dir, cls)
 
+        for file in os.listdir(cls_path):
+            if not file.endswith(".txt"):
+                continue
+            matrix = np.loadtxt(os.path.join(cls_path, file))
+            graphs.append(matrix_to_graph(matrix, label))
 
-# -------------------------------
-# 1. DATA LOADING
-# -------------------------------
-def load_full_matrix(mat_path):
-    try:
-        mat = scipy.io.loadmat(mat_path)
-    except:
-        raise ValueError(f"File could not be read: {mat_path}")
+    print(f"\n✅ Total number of graphs: {len(graphs)}")
+    return graphs
 
-    keys = [k for k in mat.keys() if not k.startswith("__")]
-    X_key = keys[0]
-    if 'X_Tum' in mat:
-        X_key = 'X_Tum'
-    X = mat[X_key]
-
-    if 'y_Tum' in mat:
-        y = mat['y_Tum'].flatten()
-    else:
-        print("'y_Tum' not found, generating labels automatically...")
-        y = np.concatenate([np.zeros(X.shape[0] // 2), np.ones(X.shape[0] - X.shape[0] // 2)])
-
-    return X, y
-
-
-# -------------------------------
-# 2. GRAPH CONVERSION
-# -------------------------------
-def matrix_to_graph(corr_matrix, label, k=10):
-    x = torch.tensor(corr_matrix, dtype=torch.float)
-    vals, indices = torch.topk(torch.abs(x), k=k, dim=1)
-    source_nodes = []
-    target_nodes = []
-    for i in range(x.shape[0]):
-        for j in range(k):
-            target = indices[i, j]
-            if i != target:
-                source_nodes.append(i)
-                target_nodes.append(target.item())
-    edge_index = torch.tensor([source_nodes, target_nodes], dtype=torch.long)
-    y = torch.tensor([label], dtype=torch.long)
-    return Data(x=x, edge_index=edge_index, y=y)
-
-
-# -------------------------------
-# 3. MODEL
-# -------------------------------
-class MatrixGAT(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
+# =========================================================
+# FOCAL LOSS FOR CLASS IMBALANCE
+# =========================================================
+class FocalLoss(nn.Module):
+    def __init__(self, alpha: float = 0.25, gamma: float = 2):
         super().__init__()
-        self.conv1 = GATConv(input_dim, hidden_dim, heads=4, concat=True)
-        self.conv2 = GATConv(hidden_dim * 4, hidden_dim, heads=1, concat=False)
-        self.lin = nn.Linear(hidden_dim * 2, output_dim)
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, logits, targets):
+        ce_loss = F.cross_entropy(logits, targets, reduction="none")
+        pt = torch.exp(-ce_loss)
+        return (self.alpha * (1 - pt) ** self.gamma * ce_loss).mean()
+
+# =========================================================
+# GRAPH ATTENTION NETWORK
+# =========================================================
+class GATNet(nn.Module):
+    def __init__(self, in_dim: int):
+        super().__init__()
+        self.gat1 = GATConv(in_dim, 32, heads=2)
+        self.gat2 = GATConv(64, 64, heads=2, concat=False)
+
+        self.classifier = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(32, 2)
+        )
 
     def forward(self, x, edge_index, batch):
-        if self.training:
-            edge_index, _ = dropout_edge(edge_index, p=DROP_EDGE_RATES, force_undirected=True)
-        x = self.conv1(x, edge_index)
-        x = F.elu(x)
-        x = F.dropout(x, p=DROPOUT, training=self.training)
-        x = self.conv2(x, edge_index)
-        x = F.elu(x)
-        x_mean = global_mean_pool(x, batch)
-        x_max = global_max_pool(x, batch)
-        x = torch.cat([x_mean, x_max], dim=1)
-        x = self.lin(x)
-        return x
+        x = F.elu(self.gat1(x, edge_index))
+        x = F.elu(self.gat2(x, edge_index))
+        x = global_mean_pool(x, batch)
+        return self.classifier(x)
+
+# =========================================================
+# LEAVE-ONE-OUT CROSS-VALIDATION
+# =========================================================
+def run_loocv(graphs: list):
+    """
+    Evaluate model performance using Leave-One-Out Cross-Validation (LOOCV).
+    
+    Args:
+        graphs (list): List of PyG Data objects.
+    """
+    loo = LeaveOneOut()
+    y_true, y_pred, y_prob = [], [], []
+
+    for i, (train_idx, test_idx) in enumerate(loo.split(graphs)):
+        print(f"Subject {i+1}/{len(graphs)}")
+
+        train_set = [graphs[j] for j in train_idx]
+        test_set = [graphs[j] for j in test_idx]
+
+        train_loader = DataLoader(train_set, batch_size=16, shuffle=True)
+        test_loader = DataLoader(test_set, batch_size=1)
+
+        model = GATNet(graphs[0].x.shape[1]).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=5e-4)
+        criterion = FocalLoss()
+
+        prev_loss = 1e9
+        for epoch in range(100):
+            model.train()
+            total_loss = 0
+
+            for batch in train_loader:
+                batch = batch.to(device)
+                optimizer.zero_grad()
+                out = model(batch.x, batch.edge_index, batch.batch)
+                loss = criterion(out, batch.y)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+
+            avg_loss = total_loss / len(train_loader)
+            if epoch > 30 and abs(prev_loss - avg_loss) < 1e-4:
+                break
+            prev_loss = avg_loss
+
+        model.eval()
+        with torch.no_grad():
+            for batch in test_loader:
+                batch = batch.to(device)
+                out = model(batch.x, batch.edge_index, batch.batch)
+                prob = F.softmax(out, dim=1)[0, 1].item()
+
+                y_true.append(batch.y.item())
+                y_pred.append(out.argmax(dim=1).item())
+                y_prob.append(prob)
+
+    print("\n==============================")
+    print("Accuracy:", accuracy_score(y_true, y_pred))
+    print("F1-score:", f1_score(y_true, y_pred))
+    print("AUC:", roc_auc_score(y_true, y_prob))
+    print("==============================")
+
+# =========================================================
+# MAIN EXECUTION
+# =========================================================
+if __name__ == "__main__":
+    set_seed(42)
+
+    # Set a general path for the dataset (adjust accordingly)
+    DATA_DIR = os.path.join("data", "Alzheimer_fnets")  # Example: ./data/Alzheimer_fnets
+    graphs = load_graphs(DATA_DIR)
+
+    print("\n🚀 Starting LOOCV evaluation...\n")
+    run_loocv(graphs)
