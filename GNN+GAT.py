@@ -111,7 +111,7 @@ def load_graphs(data_dir: str) -> list:
     """
     graphs = []
     class_folders = sorted([f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f))])
-    print("📂 Class folders detected:", class_folders)
+    print("Class folders detected:", class_folders)
 
     for cls in class_folders:
         label = 1 if "AD" in cls.upper() else 0
@@ -123,7 +123,7 @@ def load_graphs(data_dir: str) -> list:
             matrix = np.loadtxt(os.path.join(cls_path, file))
             graphs.append(matrix_to_graph(matrix, label))
 
-    print(f"\n✅ Total number of graphs: {len(graphs)}")
+    print(f"Total number of graphs: {len(graphs)}")
     return graphs
 
 # =========================================================
@@ -234,5 +234,5 @@ if __name__ == "__main__":
     DATA_DIR = os.path.join("data", "Alzheimer_fnets")  # Example: ./data/Alzheimer_fnets
     graphs = load_graphs(DATA_DIR)
 
-    print("\n🚀 Starting LOOCV evaluation...\n")
+    print("Starting LOOCV evaluation...")
     run_loocv(graphs)
