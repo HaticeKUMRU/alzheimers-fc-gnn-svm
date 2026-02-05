@@ -1,5 +1,5 @@
 # =========================================================
-# GNN for fMRI Functional Connectivity (TXT files)
+# Graph Convolutional Network (GCN) for fMRI Functional Connectivity
 # =========================================================
 import os
 import random
@@ -16,11 +16,12 @@ from sklearn.model_selection import LeaveOneOut
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
 # =========================================================
-# DEVICE & SEED
+# DEVICE CONFIGURATION & REPRODUCIBILITY
 # =========================================================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def fix_seed(seed=42):
+def set_seed(seed: int = 42):
+    """Fix random seeds for reproducibility."""
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
@@ -28,87 +29,123 @@ def fix_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
 
 # =========================================================
-# ROI FILTER (420 → 400)
+# ROI FILTERING (420 → 400)
 # =========================================================
-def filter_rois(mat):
-    idx = np.concatenate([np.arange(0, 200), np.arange(210, 410)])
-    return mat[np.ix_(idx, idx)]
+def filter_rois(matrix: np.ndarray) -> np.ndarray:
+    """
+    Select 400 ROIs from the original 420 by removing unwanted indices.
+    
+    Args:
+        matrix (np.ndarray): Square functional connectivity matrix.
+    
+    Returns:
+        np.ndarray: Filtered matrix with 400 ROIs.
+    """
+    indices = np.concatenate([np.arange(0, 200), np.arange(210, 410)])
+    return matrix[np.ix_(indices, indices)]
 
 # =========================================================
-# EDGE SPARSITY (%25)
+# EDGE SPARSIFICATION (%25)
 # =========================================================
-def sparsify_matrix(mat, keep_ratio=0.25):
-    n = mat.shape[0]
+def sparsify_matrix(matrix: np.ndarray, keep_ratio: float = 0.25) -> np.ndarray:
+    """
+    Retain only the top edges by absolute value to enforce sparsity.
+    
+    Args:
+        matrix (np.ndarray): Square functional connectivity matrix.
+        keep_ratio (float): Fraction of edges to keep.
+    
+    Returns:
+        np.ndarray: Sparse connectivity matrix.
+    """
+    n = matrix.shape[0]
     triu = np.triu_indices(n, k=1)
-    vals = np.abs(mat[triu])
-    thresh = np.percentile(vals, 100 * (1 - keep_ratio))
-    sparse = np.where(np.abs(mat) >= thresh, mat, 0)
-    return sparse
+    vals = np.abs(matrix[triu])
+    threshold = np.percentile(vals, 100 * (1 - keep_ratio))
+    sparse_matrix = np.where(np.abs(matrix) >= threshold, matrix, 0)
+    return sparse_matrix
 
 # =========================================================
-# MATRIX → GRAPH
+# MATRIX TO GRAPH CONVERSION
 # =========================================================
-def matrix_to_graph(mat, label):
-    mat = filter_rois(mat)
-    mat = sparsify_matrix(mat, keep_ratio=0.25)
+def matrix_to_graph(matrix: np.ndarray, label: int) -> Data:
+    """
+    Convert functional connectivity matrix into a PyG graph.
+    
+    Args:
+        matrix (np.ndarray): Functional connectivity matrix.
+        label (int): Class label (0=Control, 1=AD).
+    
+    Returns:
+        torch_geometric.data.Data: Graph object.
+    """
+    matrix = filter_rois(matrix)
+    matrix = sparsify_matrix(matrix, keep_ratio=0.25)
 
-    x = torch.tensor(mat, dtype=torch.float)  # node features
-    edge_index = torch.tensor(np.array(np.nonzero(mat)), dtype=torch.long)
-    edge_weight = torch.tensor(mat[edge_index[0], edge_index[1]], dtype=torch.float)
+    # Node features = adjacency matrix itself
+    x = torch.tensor(matrix, dtype=torch.float)
+    
+    # Edge index & edge attributes
+    edge_index = torch.tensor(np.array(np.nonzero(matrix)), dtype=torch.long)
+    edge_attr = torch.tensor(matrix[edge_index[0], edge_index[1]], dtype=torch.float)
 
     return Data(
         x=x,
         edge_index=edge_index,
-        edge_attr=edge_weight,
+        edge_attr=edge_attr,
         y=torch.tensor([label], dtype=torch.long)
     )
 
 # =========================================================
-# LOAD DATASET (.txt)
+# LOAD DATASET
 # =========================================================
-def load_graphs(data_dir):
+def load_graphs(data_dir: str) -> list:
+    """
+    Load all graphs from a directory structured by class folders.
+    
+    Args:
+        data_dir (str): Root directory containing class subfolders with .txt matrices.
+    
+    Returns:
+        list: List of PyG Data objects.
+    """
     graphs = []
-    class_folders = sorted(
-        [f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f))]
-    )
-
-    print("📂 Sınıf klasörleri:", class_folders)
+    class_folders = sorted([f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f))])
+    print("📂 Class folders detected:", class_folders)
 
     for cls in class_folders:
-        label = 1 if "AD" in cls else 0
+        label = 1 if "AD" in cls.upper() else 0
         cls_path = os.path.join(data_dir, cls)
 
         for file in os.listdir(cls_path):
             if not file.endswith(".txt"):
                 continue
+            matrix = np.loadtxt(os.path.join(cls_path, file))
+            graphs.append(matrix_to_graph(matrix, label))
 
-            mat = np.loadtxt(os.path.join(cls_path, file))
-            graphs.append(matrix_to_graph(mat, label))
-
-    print(f"\n✅ Toplam grafik sayısı: {len(graphs)}")
+    print(f"\n✅ Total number of graphs: {len(graphs)}")
     return graphs
 
 # =========================================================
-# FOCAL LOSS
+# FOCAL LOSS FOR CLASS IMBALANCE
 # =========================================================
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2):
+    def __init__(self, alpha: float = 0.25, gamma: float = 2):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
 
     def forward(self, logits, targets):
-        ce = F.cross_entropy(logits, targets, reduction="none")
-        pt = torch.exp(-ce)
-        return (self.alpha * (1 - pt) ** self.gamma * ce).mean()
+        ce_loss = F.cross_entropy(logits, targets, reduction="none")
+        pt = torch.exp(-ce_loss)
+        return (self.alpha * (1 - pt) ** self.gamma * ce_loss).mean()
 
 # =========================================================
-# GCN MODEL (BASELINE)
+# GRAPH CONVOLUTIONAL NETWORK (BASELINE)
 # =========================================================
 class GCNNet(nn.Module):
-    def __init__(self, in_dim):
+    def __init__(self, in_dim: int):
         super().__init__()
-
         self.gcn1 = GCNConv(in_dim, 64)
         self.gcn2 = GCNConv(64, 64)
 
@@ -126,14 +163,20 @@ class GCNNet(nn.Module):
         return self.classifier(x)
 
 # =========================================================
-# LOOCV
+# LEAVE-ONE-OUT CROSS-VALIDATION
 # =========================================================
-def run_loocv(graphs):
+def run_loocv(graphs: list):
+    """
+    Evaluate the model using Leave-One-Out Cross-Validation (LOOCV).
+    
+    Args:
+        graphs (list): List of PyG Data objects.
+    """
     loo = LeaveOneOut()
     y_true, y_pred, y_prob = [], [], []
 
     for i, (train_idx, test_idx) in enumerate(loo.split(graphs)):
-        print(f"Denek {i+1}/{len(graphs)}")
+        print(f"Subject {i+1}/{len(graphs)}")
 
         train_set = [graphs[j] for j in train_idx]
         test_set = [graphs[j] for j in test_idx]
@@ -141,7 +184,7 @@ def run_loocv(graphs):
         train_loader = DataLoader(train_set, batch_size=16, shuffle=True)
         test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
 
-        # 🔁 MODEL SIFIRDAN
+        # Initialize model from scratch for each fold
         model = GCNNet(graphs[0].x.shape[1]).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=5e-4)
         criterion = FocalLoss()
@@ -161,12 +204,12 @@ def run_loocv(graphs):
                 total_loss += loss.item()
 
             avg_loss = total_loss / len(train_loader)
-            # Erken durdurma
+            # Early stopping
             if epoch > 30 and abs(prev_loss - avg_loss) < 1e-4:
                 break
             prev_loss = avg_loss
 
-        # 🧪 TEST (GÖRÜLMEMİŞ VERİ)
+        # Evaluation on unseen test data
         model.eval()
         with torch.no_grad():
             for batch in test_loader:
@@ -185,13 +228,14 @@ def run_loocv(graphs):
     print("==============================")
 
 # =========================================================
-# MAIN
+# MAIN EXECUTION
 # =========================================================
 if __name__ == "__main__":
-    fix_seed(42)
+    set_seed(42)
 
-    DATA_DIR = "/Users/haticekumru/Desktop/Alzheimer_fnets"
+    # Set a general path for the dataset (adjust according to your system)
+    DATA_DIR = os.path.join("data", "Alzheimer_fnets")  # Example: ./data/Alzheimer_fnets
     graphs = load_graphs(DATA_DIR)
 
-    print("\n🚀 LOOCV başlıyor...\n")
+    print("\n🚀 Starting LOOCV evaluation...\n")
     run_loocv(graphs)
